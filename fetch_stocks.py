@@ -1,80 +1,89 @@
 from pykrx import stock
 import pandas as pd
 from datetime import datetime, timedelta
+import sys
 
 def get_latest_business_day():
     """
     최근 영업일을 구하는 함수입니다.
-    오늘부터 최대 10일 전까지 거슬러 올라가며 데이터가 존재하는 가장 최근 날짜를 찾습니다.
+    삼성전자(005930)의 OHLCV 데이터를 조회하여 실제 장이 열렸던 가장 최근 날짜를 찾습니다.
     """
-    target_date = datetime.now()
-    for _ in range(10):
-        date_str = target_date.strftime("%Y%m%d")
-        try:
-            # 해당 날짜에 티커 리스트가 존재하는지 확인
-            tickers = stock.get_market_ticker_list(date_str, market="KOSPI")
-            if len(tickers) > 0:
-                return date_str
-        except Exception:
-            # 오류 발생 시(보통 휴장일) 이전 날짜로 넘어감
-            pass
-        target_date -= timedelta(days=1)
+    try:
+        # 오늘부터 최근 10일간의 데이터를 조회
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
 
-    # 모든 시도가 실패할 경우 어제 날짜를 반환 (최후의 수단)
+        # get_market_ohlcv는 비교적 안정적으로 동작합니다.
+        df = stock.get_market_ohlcv(start_date, end_date, "005930")
+
+        if not df.empty:
+            # 가장 최근 날짜를 YYYYMMDD 형식으로 반환
+            return df.index[-1].strftime("%Y%m%d")
+    except Exception as e:
+        print(f"영업일 확인 중 오류 발생: {e}")
+
+    # 실패 시 어제 날짜 반환 (최후의 수단)
     return (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
 
 def fetch_stock_data():
-    print("데이터를 가져오는 중입니다. 잠시만 기다려 주세요...")
+    print("대한민국 상장주(KOSPI, KOSDAQ) 데이터를 가져오는 중입니다...")
+
+    # 1. 최근 영업일 확인
+    date = get_latest_business_day()
+    print(f"조회 기준일: {date}")
 
     try:
-        # 1. 최근 영업일 확인
-        date = get_latest_business_day()
-        print(f"조회 기준일: {date}")
+        # 2. KOSPI, KOSDAQ 종목 정보 가져오기
+        # pykrx 내부에서 KeyError가 발생할 수 있으므로 각각 시도하고 예외 처리를 합니다.
 
-        # 2. KOSPI, KOSDAQ 종목의 시가총액 정보 가져오기
-        # market="ALL"은 KOSPI, KOSDAQ, KONEX를 모두 포함하므로,
-        # 필요에 따라 각각 가져와서 합치는 방식을 사용합니다.
-        print("KOSPI 데이터를 가져오는 중...")
-        df_kospi = stock.get_market_cap_by_ticker(date, market="KOSPI")
+        results = []
+        for market in ["KOSPI", "KOSDAQ"]:
+            print(f"{market} 데이터를 가져오는 중...", end=" ", flush=True)
+            try:
+                # 시가총액 및 상장주식수 정보
+                df = stock.get_market_cap_by_ticker(date, market=market)
 
-        print("KOSDAQ 데이터를 가져오는 중...")
-        df_kosdaq = stock.get_market_cap_by_ticker(date, market="KOSDAQ")
+                if df.empty:
+                    print("데이터 없음")
+                    continue
 
-        # 두 데이터프레임 합치기
-        df = pd.concat([df_kospi, df_kosdaq])
+                # 종목명 추가
+                df['종목명'] = [stock.get_market_ticker_name(ticker) for ticker in df.index]
+                df = df.reset_index()
 
-        if df.empty:
-            print(f"죄송합니다. {date} 날짜의 데이터를 가져오지 못했습니다.")
-            print("휴장일이거나 KRX 서버 응답에 문제가 있을 수 있습니다.")
+                # 필요한 컬럼만 추출 (종목코드, 종목명, 시가총액, 상장주식수)
+                # pykrx의 get_market_cap_by_ticker 결과 컬럼: '종가', '시가총액', '거래량', '거래대금', '상장주식수'
+                df = df[['티커', '종목명', '시가총액', '상장주식수']]
+                df.columns = ['종목코드', '종목명', '시가총액', '발행주식수']
+                results.append(df)
+                print(f"완료 ({len(df)} 종목)")
+
+            except KeyError as e:
+                print(f"\n오류 발생: {e}")
+                print(f"해당 날짜({date})에 {market} 데이터를 가져오는 데 실패했습니다.")
+                print("이는 pykrx 라이브러리가 KRX 웹사이트에서 데이터를 읽어오는 과정에서 발생하는 문제입니다.")
+                print("날짜를 변경하거나 잠시 후 다시 시도해 주세요.")
+            except Exception as e:
+                print(f"\n기타 오류 발생: {e}")
+
+        if not results:
+            print("\n데이터를 하나도 가져오지 못했습니다. 프로그램을 종료합니다.")
             return
 
-        # 3. 종목명(Company Name) 추가
-        # df의 인덱스는 종목코드(Ticker)입니다.
-        print("종목명을 매칭하고 있습니다...")
-        df['종목명'] = [stock.get_market_ticker_name(ticker) for ticker in df.index]
-
-        # 4. 필요한 컬럼만 선택 및 정리
-        # '상장주식수'가 발행주식수와 동일한 의미로 사용됩니다.
-        result_df = df[['종목명', '시가총액', '상장주식수']]
-
-        # 인덱스(종목코드)를 컬럼으로 포함시키고 컬럼명 변경
-        result_df = result_df.reset_index()
-        result_df.columns = ['종목코드', '종목명', '시가총액', '발행주식수']
-
-        # 5. CSV 파일로 저장
-        # utf-8-sig 인코딩은 엑셀에서 한글이 깨지는 것을 방지합니다.
+        # 3. 데이터 통합 및 저장
+        final_df = pd.concat(results, ignore_index=True)
         output_file = "stock_data.csv"
-        result_df.to_csv(output_file, index=False, encoding="utf-8-sig")
+
+        # utf-8-sig 인코딩으로 저장하여 엑셀 한글 깨짐 방지
+        final_df.to_csv(output_file, index=False, encoding="utf-8-sig")
 
         print("-" * 50)
-        print(f"축하합니다! 성공적으로 데이터를 가져왔습니다.")
-        print(f"저장된 파일: {output_file}")
-        print(f"총 종목 수: {len(result_df)} 개 (KOSPI + KOSDAQ)")
+        print(f"파일 저장 완료: {output_file}")
+        print(f"총 수집 종목: {len(final_df)} 개")
         print("-" * 50)
 
     except Exception as e:
-        print(f"\n오류가 발생했습니다: {e}")
-        print("네트워크 연결을 확인하거나 나중에 다시 시도해 주세요.")
+        print(f"\n처리 중 예상치 못한 오류가 발생했습니다: {e}")
 
 if __name__ == "__main__":
     fetch_stock_data()

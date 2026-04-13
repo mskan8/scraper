@@ -1,5 +1,4 @@
-finance-datareader
+requests
 pandas
 beautifulsoup4
 lxml
-requests

@@ -1,4 +1,6 @@
-requests
+finance-datareader
 pandas
 beautifulsoup4
 lxml
+requests
+pykrx
